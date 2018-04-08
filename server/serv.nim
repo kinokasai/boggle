@@ -1,9 +1,12 @@
 import asyncnet, asyncdispatch, sequtils, strutils, tables, options
 
 
-var sockets {.threadvar.}: Table[int, AsyncSocket]
+var sockets : Table[int, AsyncSocket]
 # Will need to make the table robust for multithreaded code
-var names {.threadvar.}: Table[int, string]
+# Basically, will need some sort of message passing between
+# the main thread and client handlers.
+# Or basically implement the readwrite lock.
+var names : Table[int, string]
 
 proc name(id: int) : string =
     result = names[id]
@@ -23,8 +26,11 @@ proc table_find[A, B](t: var Table[A, B], value: B) : Option[A] =
             return some key
     return none(A)
 
-proc authentify(client: int, name:string) =
+proc authentify(client: int, name:string) : bool =
+    if names.hasKey(client):
+        return false
     names[client] = name
+    return true
 
 # FIXME: Can only the connected client remove itself?
 proc delete(client: int, name: string) : bool = 
@@ -36,24 +42,34 @@ proc delete(client: int, name: string) : bool =
     # sockets.del(client)
     return true
 
-proc drop_client(client: int) =
-    sockets[client].close()
-    sockets.del(client)
-
 proc signal_others(client:int, msg:string) {.async.} =
     for id in names.keys():
         if id != client:
             await id.sock.send(msg)
+
+proc drop_client(client: int) {.async.} =
+    echo("Dropping client " & $client)
+    sockets[client].close()
+    sockets.del(client)
+    if names.hasKey(client):
+        await signal_others(client, "DECONNEXION/" & $names[client] & "\n")
+    names.del(client)
+
+proc signal_all(msg: string) {.async.} =
+    for id in names.keys():
+        await id.sock.send(msg)
 
 proc process_client(client: int) {.async.} =
     let line = await client.sock.recv_line()
     let cmd = line.split({'/'})
     case cmd[0]:
         of "CONNEXION":
-            client.authentify(cmd[1])
-            echo "Player " & cmd[1] & " connected."
-            await client.sock.send("You're connected as " & cmd[1] & "\n")
-            await signal_others(client, cmd[1] & " joined the game.\n")
+            if client.authentify(cmd[1]):
+                echo "Player " & cmd[1] & " connected."
+                await client.sock.send("You're connected as " & cmd[1] & "\n")
+                await signal_others(client, "CONNECTE/" & cmd[1] & "\n")
+            else:
+                await client.sock.send("Username already taken.\n")
         of "SORT":
             echo (cmd[1] & " quit.")
             if delete(client, cmd[1]):
@@ -61,8 +77,9 @@ proc process_client(client: int) {.async.} =
             else:
                 await client.sock.send("But you can't deconnect someone else!\n")
         of "ENVOI":
+            # Can't chat if you're not authenticated.
             if names.hasKey(client):
-                await signal_others(client, client.name & ": " & cmd[1] & "\n")
+                await signal_all("RECEPTION/" & client.name & ": " & cmd[1] & "\n")
             else:
                 await client.sock.send("Need to connect before sending messages.\n")
         of "PENVOI":
@@ -75,9 +92,11 @@ proc process_client(client: int) {.async.} =
             else:
                 await client.sock.send("Need to connect before sending messages.\n")
         of "quit":
-            drop_client(client)
+            await drop_client(client)
+        of "":
+            await drop_client(client)
         else:
-            echo "Unknown command"
+            echo "Unknown command: `" & cmd[0] & "'"
 
 
 proc handle(client: int) {.async.} =
