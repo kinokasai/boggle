@@ -1,71 +1,105 @@
-import asyncnet, asyncdispatch, sequtils, strutils, locks
-
-type
-    StateKind = enum Connected, Anonymous
-    State = ref object
-        case kind : StateKind:
-        of Connected: name : string
-        of Anonymous: nil
-
-type Client = tuple[state: State, sock:AsyncSocket]
-
-type delta_kind = enum ChangeName, None
-type delta = ref object
-    case kind: delta_kind
-    of ChangeName:
-        client: Client
-        name : string
-    of None: nil
+import asyncnet, asyncdispatch, sequtils, strutils, tables, options
 
 
-var clients {.threadvar.}: seq[Client]
-var clients_lock: Lock
+var sockets {.threadvar.}: Table[int, AsyncSocket]
+# Will need to make the table robust for multithreaded code
+var names {.threadvar.}: Table[int, string]
 
-proc process_cmd(client: Client, cmd:seq[string]) : delta =
-     case cmd[0]:
-         of "CONNEXION":
-             echo("Incoming connexion")
-             result = delta(kind:ChangeName, client:client, name:cmd[1])
-         else:
-             echo "Unknown command"
-             result = delta(kind:None)
+proc name(id: int) : string =
+    result = names[id]
+
+proc sock(id: int) : AsyncSocket =
+    result = sockets[id]
+
+proc make_client(sock: AsyncSocket) : int = 
+    var id {.global.} = -1
+    inc(id)
+    sockets[id] = sock
+    id
+
+proc table_find[A, B](t: var Table[A, B], value: B) : Option[A] =
+    for key, data in t.pairs():
+        if data == value:
+            return some key
+    return none(A)
+
+proc authentify(client: int, name:string) =
+    names[client] = name
+
+# FIXME: Can only the connected client remove itself?
+proc delete(client: int, name: string) : bool = 
+    if names.hasKey(client) and names[client] != name:
+        return false
+    names.del(client)
+    # We allow name rebinding without reconnection
+    # sockets[client].close()
+    # sockets.del(client)
+    return true
+
+proc drop_client(client: int) =
+    sockets[client].close()
+    sockets.del(client)
+
+proc signal_others(client:int, msg:string) {.async.} =
+    for id in names.keys():
+        if id != client:
+            await id.sock.send(msg)
+
+proc process_client(client: int) {.async.} =
+    let line = await client.sock.recv_line()
+    let cmd = line.split({'/'})
+    case cmd[0]:
+        of "CONNEXION":
+            client.authentify(cmd[1])
+            echo "Player " & cmd[1] & " connected."
+            await client.sock.send("You're connected as " & cmd[1] & "\n")
+            await signal_others(client, cmd[1] & " joined the game.\n")
+        of "SORT":
+            echo (cmd[1] & " quit.")
+            if delete(client, cmd[1]):
+                await signal_others(client, "User " & cmd[1] & " disconnected.\n")
+            else:
+                await client.sock.send("But you can't deconnect someone else!\n")
+        of "ENVOI":
+            if names.hasKey(client):
+                await signal_others(client, client.name & ": " & cmd[1] & "\n")
+            else:
+                await client.sock.send("Need to connect before sending messages.\n")
+        of "PENVOI":
+            if names.hasKey(client):
+                let id_opt = table_find(names, cmd[1])
+                if id_opt.isNone:
+                    await client.sock.send("No user named " & cmd[1] & "\n")
+                else:
+                    await id_opt.get().sock.send(client.name &  ": " & cmd[2] & "\n")
+            else:
+                await client.sock.send("Need to connect before sending messages.\n")
+        of "quit":
+            drop_client(client)
+        else:
+            echo "Unknown command"
 
 
-proc process_client(client: Client) : Future[delta] {.async.} =
+proc handle(client: int) {.async.} =
     while true:
-        let line = await client.sock.recv_line()
-        echo line
-        if line.len == 0:
-            echo("empty line")
+        # If there's no more socket, drop the client
+        if not sockets.hasKey(client):
             break
-        let delta = client.process_cmd(line.split({'/'}))
-        if delta.kind == ChangeName:
-            echo("Change name!")
-        # Shouldn't return, but pass a message.
-        return delta
+        await process_client(client)
 
-proc serve() {.async.} =
-    clients = @[]
+
+proc register() {.async.} =
+    sockets = initTable[int, AsyncSocket]()
+    names = initTable[int, string]()
+
     var server = new_async_socket()
     server.set_sock_opt(OptReuseAddr, true)
     server.bind_addr(Port(3434))
     server.listen()
-
     while true:
         let sock = await server.accept()
-        let client = Client((State(kind:Anonymous), sock))
-        clients.add client
-        let delta = await process_client(client)
-        if delta.kind == ChangeName:
-            echo "go changed name"
-            # acquire clients_lock
-            clients.keepIf(proc (c:Client) : bool = c == delta.client)
-            # release clients_lock
-            for client in clients:
-                await client.sock.send(delta.name & "connected.")
-        else:
-            echo "got nothing"
+        asyncCheck handle(make_client(sock))
 
 
-async_check serve()
+async_check register()
 run_forever()
