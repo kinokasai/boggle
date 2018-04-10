@@ -1,4 +1,4 @@
-import asyncnet, asyncdispatch, sequtils, strutils, tables, options
+import asyncnet, asyncdispatch, sequtils, strutils, tables, options, dice
 
 
 var sockets : Table[int, AsyncSocket]
@@ -7,6 +7,7 @@ var sockets : Table[int, AsyncSocket]
 # the main thread and client handlers.
 # Or basically implement the readwrite lock.
 var names : Table[int, string]
+var grid : seq[char]
 
 proc name(id: int) : string =
     result = names[id]
@@ -95,6 +96,8 @@ proc process_client(client: int) {.async.} =
             await drop_client(client)
         of "":
             await drop_client(client)
+        of "START":
+            await signal_all("TOUR/" & grid.to_str)
         else:
             echo "Unknown command: `" & cmd[0] & "'"
 
@@ -110,6 +113,7 @@ proc handle(client: int) {.async.} =
 proc register() {.async.} =
     sockets = initTable[int, AsyncSocket]()
     names = initTable[int, string]()
+    grid = get_grid()
 
     var server = new_async_socket()
     server.set_sock_opt(OptReuseAddr, true)

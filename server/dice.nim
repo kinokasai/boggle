@@ -25,6 +25,11 @@ proc get_grid*() : seq[char] =
     for dice in dices:
         result.add(dice.rand())
 
+proc to_str*(s: seq[char]) : string =
+    result = ""
+    for ch in s:
+        result = result & ch
+
 proc translate_trajectory(traj: string) : seq[int] =
     result = @[]
     for i in 0..<traj.len - 1:
