@@ -33,5 +33,10 @@ class Client() {
         out.flush()
     }
 
+    fun send(msg: String) {
+        out.write(msg)
+        out.newLine()
+        out.flush()
+    }
 
 }
