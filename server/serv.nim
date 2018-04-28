@@ -1,4 +1,4 @@
-import asyncnet, asyncdispatch, sequtils, strutils, tables, options
+import asyncnet, asyncdispatch, sequtils, strutils, tables, options, dice
 
 
 var sockets : Table[int, AsyncSocket]
@@ -7,6 +7,7 @@ var sockets : Table[int, AsyncSocket]
 # the main thread and client handlers.
 # Or basically implement the readwrite lock.
 var names : Table[int, string]
+var grid: seq[char]
 
 proc name(id: int) : string =
     result = names[id]
@@ -61,6 +62,7 @@ proc signal_all(msg: string) {.async.} =
 
 proc process_client(client: int) {.async.} =
     let line = await client.sock.recv_line()
+    echo line
     let cmd = line.split({'/'})
     case cmd[0]:
         of "CONNEXION":
@@ -91,6 +93,9 @@ proc process_client(client: int) {.async.} =
                     await id_opt.get().sock.send(client.name &  ": " & cmd[2] & "\n")
             else:
                 await client.sock.send("Need to connect before sending messages.\n")
+        of "gimme":
+            grid = get_grid()
+            await client.sock.send("TOUR/" & grid.join & "\n")
         of "quit":
             await drop_client(client)
         of "":
@@ -119,6 +124,7 @@ proc register() {.async.} =
         let sock = await server.accept()
         asyncCheck handle(make_client(sock))
 
+grid = get_grid()
 
 async_check register()
 run_forever()
