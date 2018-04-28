@@ -100,6 +100,8 @@ proc process_client(client: int) {.async.} =
             await drop_client(client)
         of "":
             await drop_client(client)
+        of "START":
+            await signal_all("TOUR/" & grid.to_str)
         else:
             echo "Unknown command: `" & cmd[0] & "'"
 
@@ -115,6 +117,7 @@ proc handle(client: int) {.async.} =
 proc register() {.async.} =
     sockets = initTable[int, AsyncSocket]()
     names = initTable[int, string]()
+    grid = get_grid()
 
     var server = new_async_socket()
     server.set_sock_opt(OptReuseAddr, true)
