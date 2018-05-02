@@ -1,5 +1,7 @@
 import asyncnet, asyncdispatch, sequtils, strutils, tables, options, dice
 
+type ServerState = enum
+    Idle, Research, Verification, Result
 
 var sockets : Table[int, AsyncSocket]
 # Will need to make the table robust for multithreaded code
@@ -7,7 +9,22 @@ var sockets : Table[int, AsyncSocket]
 # the main thread and client handlers.
 # Or basically implement the readwrite lock.
 var names : Table[int, string]
+# We'll accept already proposed words, but won't count them on score
+var words: Table[string, int]
+var duplicates: seq[string]
 var grid: seq[char]
+var state: ServerState
+
+proc transition(state: ServerState) : ServerState =
+    case (state):
+        of Idle:
+            result = Research
+        of Research:
+            result = Idle
+        of Verification:
+            result = Result
+        of Result:
+            result = Idle
 
 proc name(id: int) : string =
     result = names[id]
@@ -32,6 +49,9 @@ proc authentify(client: int, name:string) : bool =
         return false
     names[client] = name
     return true
+
+proc add_word(client: int, word:string) =
+    words[word] = client
 
 # FIXME: Can only the connected client remove itself?
 proc delete(client: int, name: string) : bool = 
@@ -60,63 +80,92 @@ proc signal_all(msg: string) {.async.} =
     for id in names.keys():
         await id.sock.send(msg)
 
-proc process_client(client: int) {.async.} =
-    let line = await client.sock.recv_line()
-    echo line
-    let cmd = line.split({'/'})
+proc session_timer() {.async.} =
+    await sleepAsync(10000)
+    await signal_all("RFIN/" & "\n")
+    state = state.transition()
+
+proc start_session() {.async.} =
+    if state == Idle:
+        state = state.transition()
+    asyncCheck session_timer()
+    await signal_all("SESSION/" & "\n")
+    grid = get_grid()
+    await signal_all("TOUR/" & grid.join & "\n")
+
+# The tricky thing is that we have concurrent state machines.
+# One for every player, and one for the server as a whole.
+
+proc process_chat(client: int, cmd: seq[string]) {.async, inline.} =
     case cmd[0]:
-        of "CONNEXION":
-            if client.authentify(cmd[1]):
-                echo "Player " & cmd[1] & " connected."
-                await client.sock.send("You're connected as " & cmd[1] & "\n")
-                await signal_others(client, "CONNECTE/" & cmd[1] & "\n")
-            else:
-                await client.sock.send("Username already taken.\n")
-        of "SORT":
-            echo (cmd[1] & " quit.")
-            if delete(client, cmd[1]):
-                await signal_others(client, "User " & cmd[1] & " disconnected.\n")
-            else:
-                await client.sock.send("But you can't deconnect someone else!\n")
         of "ENVOI":
-            # Can't chat if you're not authenticated.
-            if names.hasKey(client):
-                await signal_all("RECEPTION/" & client.name & ": " & cmd[1] & "\n")
-            else:
-                await client.sock.send("Need to connect before sending messages.\n")
+            await signal_all("RECEPTION/" & client.name & ": " & cmd[1] & "\n")
         of "PENVOI":
-            if names.hasKey(client):
-                let id_opt = table_find(names, cmd[1])
-                if id_opt.isNone:
-                    await client.sock.send("No user named " & cmd[1] & "\n")
-                else:
-                    await id_opt.get().sock.send("PRECEPTION/" & client.name &  ": " & cmd[2] & "\n")
+            let id_opt = table_find(names, cmd[1])
+            if id_opt.isNone:
+               await client.sock.send("No user named " & cmd[1] & "\n")
             else:
-                await client.sock.send("Need to connect before sending messages.\n")
+                await id_opt.get().sock.send("PRECEPTION/" & client.name &  ": " & cmd[2] & "\n")
         of "GETPLAYERS":
             var players = ""
             for name in names.values():
                 players &= name & "|"
             await client.sock.send("PLAYERS/" & players & "\n")
-        of "gimme":
-            grid = get_grid()
-            await client.sock.send("TOUR/" & grid.join & "\n")
-        of "quit":
-            await drop_client(client)
-        of "START":
-            await signal_all("TOUR/" & grid.to_str)
-        of "TROUVE":
-            let correct = verify_trajectory(grid, cmd[1], cmd[2])
-            if correct:
-                await client.sock.send("MVALIDE/" & cmd[1] & "\n")
-            else:
-                await client.sock.send("MINVALIDE/WRONGTRAJECTORY" & "\n")
-        of "":
-            if cmd.len == 1:
-                await drop_client(client)
-        else:
-            echo "Unknown command: `" & cmd[0] & "'"
 
+proc process_idle(client: int, cmd: seq[string]) {.async, inline.} =
+    case cmd[0]:
+        of "START":
+            await start_session()
+
+proc process_research(client: int, cmd: seq[string]) {.async, inline.} =
+    case cmd[0]:
+        of "TROUVE":
+            let word = cmd[1]
+            let correct = verify_trajectory(grid, word, cmd[2])
+            if correct:
+                if words.hasKey(word):
+                    duplicates.add(word)
+                    await client.sock.send("MINVALIDE/PRI" & "\n")
+                else:
+                    client.add_word(word)
+                    await client.sock.send("MVALIDE/" & word & "\n")
+            else:
+                await client.sock.send("MINVALIDE/POS" & "\n")
+
+proc process_state(client: int, cmd: seq[string]) {.async, inline} =
+    case state:
+        of Idle:
+            await process_idle(client, cmd)
+        of Research:
+            await process_research(client, cmd)
+        of Verification:
+            discard
+        of Result:
+            discard
+
+proc process_client(client: int) {.async.} =
+    let line = await client.sock.recv_line()
+    echo line
+    let cmd = line.split({'/'})
+    # Players can connect at any time
+    if cmd[0] == "CONNEXION":
+        if client.authentify(cmd[1]):
+            echo "Player " & cmd[1] & " connected."
+            await client.sock.send("You're connected as " & cmd[1] & "\n")
+            await signal_others(client, "CONNECTE/" & cmd[1] & "\n")
+        else:
+            await client.sock.send("Username already taken.\n")
+    elif cmd[0] == "" and cmd.len == 1:
+        await drop_client(client)
+    if (names.hasKey(client)):
+        if cmd[0] == "SORT":
+            echo (cmd[1] & " quit.")
+            if delete(client, cmd[1]):
+                await signal_others(client, "User " & cmd[1] & " disconnected.\n")
+            else:
+                await client.sock.send("But you can't deconnect someone else!\n")
+        await process_chat(client, cmd)
+        await process_state(client, cmd)
 
 proc handle(client: int) {.async.} =
     while true:
@@ -125,10 +174,12 @@ proc handle(client: int) {.async.} =
             break
         await process_client(client)
 
-
 proc register() {.async.} =
     sockets = initTable[int, AsyncSocket]()
     names = initTable[int, string]()
+    words = initTable[string, int]()
+    duplicates = @[]
+    state = Idle
     grid = get_grid()
 
     var server = new_async_socket()
