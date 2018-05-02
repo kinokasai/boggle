@@ -4,11 +4,13 @@ import com.example.demo.models.Client
 import com.example.demo.models.Letter
 import javafx.application.Platform
 import javafx.scene.control.Button
+import javafx.scene.control.ProgressIndicator
 import javafx.scene.control.TextArea
 import javafx.scene.control.TextField
 import kotlinx.coroutines.experimental.async
 import tornadofx.*
 import tornadofx.Stylesheet.Companion.button
+import kotlin.concurrent.thread
 
 class ClientController : Controller() {
     val client = Client()
@@ -21,7 +23,7 @@ class ClientController : Controller() {
         return true
     }
 
-    fun run(messages: TextArea, grid : MutableList<Button>, players: TextArea) {
+    fun run(messages: TextArea, grid : MutableList<Button>, players: TextArea, turn_progress: ProgressIndicator) {
         async {
             while(isActive) {
                 while(true) {
@@ -54,6 +56,15 @@ class ClientController : Controller() {
                         }
                         "TOUR" -> {
                             println("you got TOUR")
+                            // Check if we have the time extension
+                            if (cmd.size == 3) {
+                                thread {
+                                    for (i in 0..(cmd[2]).toInt() * 100) {
+                                        Platform.runLater { turn_progress.progress = i.toDouble() / 100.0 }
+                                        Thread.sleep(100)
+                                    }
+                                }
+                            }
                             val gridtext = cmd[1]
                             val angles = listOf(0.0, 90.0, 180.0, 270.0)
                             Platform.runLater {
@@ -65,7 +76,10 @@ class ClientController : Controller() {
                             }
                         }
                         "RFIN" -> {
-                            Platform.runLater { grid.forEach { it.text = "*"; it.isDisable = true} }
+                            Platform.runLater {
+                                grid.forEach { it.text = "*"; it.isDisable = true}
+                                turn_progress.progress = 100.0
+                            }
                         }
                     }
                 }

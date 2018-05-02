@@ -91,7 +91,7 @@ proc start_session() {.async.} =
     asyncCheck session_timer()
     await signal_all("SESSION/" & "\n")
     grid = get_grid()
-    await signal_all("TOUR/" & grid.join & "\n")
+    await signal_all("TOUR/" & grid.join & "/10" & "\n")
 
 # The tricky thing is that we have concurrent state machines.
 # One for every player, and one for the server as a whole.
@@ -132,7 +132,7 @@ proc process_research(client: int, cmd: seq[string]) {.async, inline.} =
             else:
                 await client.sock.send("MINVALIDE/POS" & "\n")
 
-proc process_state(client: int, cmd: seq[string]) {.async, inline} =
+proc process_state(client: int, cmd: seq[string]) {.async, inline.} =
     case state:
         of Idle:
             await process_idle(client, cmd)
@@ -143,20 +143,26 @@ proc process_state(client: int, cmd: seq[string]) {.async, inline} =
         of Result:
             discard
 
+proc process_always(client: int, cmd: seq[string]) {.async, inline.} =
+    case cmd[0]:
+        of "CONNEXION":
+            if client.authentify(cmd[1]):
+                echo "Player " & cmd[1] & " connected."
+                await client.sock.send("You're connected as " & cmd[1] & "\n")
+                await signal_others(client, "CONNECTE/" & cmd[1] & "\n")
+            else:
+                await client.sock.send("Username already taken.\n")
+        of "quit":
+            await drop_client(client)
+        of "":
+            await drop_client(client)
+            
+
 proc process_client(client: int) {.async.} =
     let line = await client.sock.recv_line()
     echo line
-    let cmd = line.split({'/'})
-    # Players can connect at any time
-    if cmd[0] == "CONNEXION":
-        if client.authentify(cmd[1]):
-            echo "Player " & cmd[1] & " connected."
-            await client.sock.send("You're connected as " & cmd[1] & "\n")
-            await signal_others(client, "CONNECTE/" & cmd[1] & "\n")
-        else:
-            await client.sock.send("Username already taken.\n")
-    elif cmd[0] == "" and cmd.len == 1:
-        await drop_client(client)
+    let cmd = line.split("/")
+    await process_always(client, cmd)
     if (names.hasKey(client)):
         if cmd[0] == "SORT":
             echo (cmd[1] & " quit.")

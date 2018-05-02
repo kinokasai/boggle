@@ -19,6 +19,7 @@ class GameView : View("Hello TornadoFX") {
     val word = mutableListOf<Letter>()
     var words = textfield()
     var revert = false
+    var turn_progress = progressindicator { progress = 0.0 }
     val grid_buttons = MutableList(16, {_ ->
         button("*") {
             style { fontFamily = "DejaVu Sans Mono"}
@@ -115,6 +116,7 @@ class GameView : View("Hello TornadoFX") {
                     controller.getgrid()
                 }
             }
+            this += turn_progress
 
         }
         vbox {
@@ -139,7 +141,7 @@ class GameView : View("Hello TornadoFX") {
                     inputField.clear()
                 }
             }
-            controller.run(chat, grid_buttons, players)
+            controller.run(chat, grid_buttons, players, turn_progress)
         }
     }
 }
