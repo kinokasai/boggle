@@ -90,18 +90,30 @@ proc process_client(client: int) {.async.} =
                 if id_opt.isNone:
                     await client.sock.send("No user named " & cmd[1] & "\n")
                 else:
-                    await id_opt.get().sock.send(client.name &  ": " & cmd[2] & "\n")
+                    await id_opt.get().sock.send("PRECEPTION/" & client.name &  ": " & cmd[2] & "\n")
             else:
                 await client.sock.send("Need to connect before sending messages.\n")
+        of "GETPLAYERS":
+            var players = ""
+            for name in names.values():
+                players &= name & "|"
+            await client.sock.send("PLAYERS/" & players & "\n")
         of "gimme":
             grid = get_grid()
             await client.sock.send("TOUR/" & grid.join & "\n")
         of "quit":
             await drop_client(client)
-        of "":
-            await drop_client(client)
         of "START":
             await signal_all("TOUR/" & grid.to_str)
+        of "TROUVE":
+            let correct = verify_trajectory(grid, cmd[1], cmd[2])
+            if correct:
+                await client.sock.send("MVALIDE/" & cmd[1] & "\n")
+            else:
+                await client.sock.send("MINVALIDE/WRONGTRAJECTORY" & "\n")
+        of "":
+            if cmd.len == 1:
+                await drop_client(client)
         else:
             echo "Unknown command: `" & cmd[0] & "'"
 

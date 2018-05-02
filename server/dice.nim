@@ -1,4 +1,4 @@
-import random, sequtils
+import random, sequtils, strutils
 
 var dices = [
             ['E', 'T', 'U', 'K', 'N', 'O'],
@@ -32,15 +32,19 @@ proc to_str*(s: seq[char]) : string =
 
 proc translate_trajectory(traj: string) : seq[int] =
     result = @[]
-    for i in 0..<traj.len - 1:
+    var i = 0
+    while i < traj.len - 1:
+        echo traj[i]
         var acc = if traj[i] == 'A': 0
                   elif traj[i] == 'B': 4
                   elif traj[i] == 'C':  8
                   else: 12
-        result.add(acc + traj[i+1].int)
+        result.add(acc + ($traj[i+1]).parseInt - 1)
+        i += 2
 
-proc verify_trajectory(grid: seq[char], word: string, trajectory: seq[int]) : bool = 
+proc verify_trajectory*(grid: seq[char], word: string, trajectory: string) : bool = 
+    let trajectory = translate_trajectory(trajectory)
     for it in zip(word, trajectory):
-        if it.a == grid[it.b]:
+        if it.a != grid[it.b]:
             return false
     return true
