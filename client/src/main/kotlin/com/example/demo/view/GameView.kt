@@ -1,13 +1,23 @@
 package com.example.demo.view
 
 import com.example.demo.controllers.ClientController
+import com.example.demo.models.Letter
 import javafx.scene.control.Button
 import javafx.scene.input.KeyCode
 import tornadofx.*
 
-class MainView : View("Hello TornadoFX") {
+class GameView : View("Hello TornadoFX") {
+    fun findi(l: List<Button>, pred: (Button) -> Boolean): Pair<Button, Int>? {
+        for (i in 0..l.size - 1) {
+            if (pred(l[i])) {
+                return Pair(l[i], i)
+            }
+        }
+        return null
+    }
     val controller : ClientController by inject()
-    val words = textfield()
+    val word = mutableListOf<Letter>()
+    var words = textfield()
     val grid_buttons = MutableList(16, {_ ->
         button("*") {
             style { fontFamily = "DejaVu Sans Mono"}
@@ -15,13 +25,25 @@ class MainView : View("Hello TornadoFX") {
                 words.text += text
             }
         } })
-
+    val chat = textarea {
+        isEditable = false
+        prefColumnCount = 20
+    }
+    val players = textarea {
+        isEditable = false
+        prefColumnCount = 6
+    }
     fun get_diff(a : String, b: String): String {
         for(i in 0..b.length-1) {
             if (a[i] != b[i])
             { return "${a[i]}"}
         }
         return a.last().toString()
+    }
+
+    override fun onDock() {
+        currentWindow?.sizeToScene()
+        super.onDock()
     }
     override val root = hbox  {
         vbox {
@@ -49,25 +71,25 @@ class MainView : View("Hello TornadoFX") {
                 this += grid_buttons[14]
                 this += grid_buttons[15]
             }
-           /* words.setOnKeyTyped { event ->
-                println(event.character)
-                if (event.code == KeyCode.BACK_SPACE) {
-
-                }
-                val but = grid_buttons.find { button -> !button.isDisable && (button.text.toLowerCase() == event.character.toLowerCase())}
-                if (but == null) {
-                event.consume()
-                } else {
-                    but.isDisable = true
-                }
-            } */
+            var revert = false
+            // FIXME: Manage the case where text is removed from the box
             words.textProperty().addListener { obs, old, new ->
-                // if we add a char, find if it's legal, remove it if not.
+                // This is absolutely disgusting, but nodody will have to maintain it, so...
+                if (revert) {
+                    revert = false
+                    return@addListener
+                }
+                // if we add a char, find if it's legal, revert if not
                 if (old.length < new.length) {
                     var new_char = get_diff(new, old)
-                    val but = grid_buttons.find { button -> (!button.isDisable) && button.text.toLowerCase() == new_char.toLowerCase()}
-                    if (but == null) { words.text = old }
-                    else { but.isDisable = true }
+                    val but = findi(grid_buttons, { (!it.isDisable) && it.text.toLowerCase() == new_char.toLowerCase()})
+                    if (but == null) {
+                        revert = true
+                        words.text = old
+                    } else {
+                        word.add(Letter(but.first.text[0], but.second))
+                        but.first.isDisable = true
+                    }
                 } else if (old.length > new.length) { //
                     var old_char = get_diff(old, new)
                     val but = grid_buttons.find { button -> button.isDisable && button.text.toLowerCase() == old_char.toLowerCase()}
@@ -79,6 +101,7 @@ class MainView : View("Hello TornadoFX") {
             this += words
             button("Send word") {
                 action {
+                    controller.sendword(word, words, grid_buttons)
                     grid_buttons[1].text = "A"
                 }
             }
@@ -90,24 +113,30 @@ class MainView : View("Hello TornadoFX") {
 
         }
         vbox {
-            val messages = textarea {
-                isEditable = false
+            borderpane {
+                center = chat
+                right = players
             }
             label("Input")
-            val inputField = textfield();
+            val inputField = textfield {
+                setOnKeyPressed{  event ->
+                    println("keytyped")
+                    if (event.code == KeyCode.ENTER) {
+                        println("it's enter !")
+                        controller.send(chat, this.text)
+                        this.clear()
+                    }
+                }
+                prefWidth = 1.0
+            }
             button("Send") {
                 action {
                     println("You sent " + inputField.text)
-                    controller.send(inputField.text)
+                    controller.send(chat, inputField.text)
                     inputField.clear()
                 }
             }
-            button("Connect") {
-                action {
-                    println("Connecting as kino.")
-                    controller.connect(messages, grid_buttons)
-                }
-            }
+            controller.run(chat, grid_buttons, players)
         }
     }
 }
