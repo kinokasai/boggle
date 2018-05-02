@@ -18,12 +18,14 @@ class GameView : View("Hello TornadoFX") {
     val controller : ClientController by inject()
     val word = mutableListOf<Letter>()
     var words = textfield()
+    var revert = false
     val grid_buttons = MutableList(16, {_ ->
         button("*") {
             style { fontFamily = "DejaVu Sans Mono"}
             action {
                 words.text += text
             }
+            isDisable = true
         } })
     val chat = textarea {
         isEditable = false
@@ -71,7 +73,6 @@ class GameView : View("Hello TornadoFX") {
                 this += grid_buttons[14]
                 this += grid_buttons[15]
             }
-            var revert = false
             // FIXME: Manage the case where text is removed from the box
             words.textProperty().addListener { obs, old, new ->
                 // This is absolutely disgusting, but nodody will have to maintain it, so...
@@ -98,11 +99,15 @@ class GameView : View("Hello TornadoFX") {
                     }
                 }
             }
+            words.setOnKeyPressed {
+                if (it.code == KeyCode.ENTER) {
+                    controller.sendword(word, words, grid_buttons)
+                }
+            }
             this += words
             button("Send word") {
                 action {
                     controller.sendword(word, words, grid_buttons)
-                    grid_buttons[1].text = "A"
                 }
             }
             button("get grid") {
@@ -120,9 +125,7 @@ class GameView : View("Hello TornadoFX") {
             label("Input")
             val inputField = textfield {
                 setOnKeyPressed{  event ->
-                    println("keytyped")
                     if (event.code == KeyCode.ENTER) {
-                        println("it's enter !")
                         controller.send(chat, this.text)
                         this.clear()
                     }

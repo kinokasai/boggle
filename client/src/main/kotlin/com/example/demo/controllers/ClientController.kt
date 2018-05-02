@@ -60,8 +60,12 @@ class ClientController : Controller() {
                                 for (i in 0..grid.size - 1) {
                                     grid[i].text = "${gridtext[i]}"
                                     grid[i].rotate = angles.shuffled().take(1)[0]
+                                    grid[i].isDisable = false
                                 }
                             }
+                        }
+                        "RFIN" -> {
+                            Platform.runLater { grid.forEach { it.text = "*"; it.isDisable = true} }
                         }
                     }
                 }
@@ -98,6 +102,6 @@ class ClientController : Controller() {
     }
 
     fun getgrid() {
-        client.send("gimme")
+        client.send("START/")
     }
 }
