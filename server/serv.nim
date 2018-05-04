@@ -1,5 +1,8 @@
-import asyncnet, asyncdispatch, sequtils, strutils, tables, options, dice
+import asyncnet, asyncdispatch, sequtils, strutils, tables, options, dice, os
+import patree_bin
 
+
+# Fun fact: The verification phase doesn't exist in immediate mode
 type ServerState = enum
     Idle, Research, Verification, Result
 
@@ -11,16 +14,32 @@ var sockets : Table[int, AsyncSocket]
 var names : Table[int, string]
 # We'll accept already proposed words, but won't count them on score
 var words: Table[string, int]
+var scores: OrderedTable[int, int]
 var duplicates: seq[string]
 var grid: seq[char]
 var state: ServerState
+var turns_per_session = 3
+var turn_length = 15
+var score_table = {3:1, 4:1, 5:2, 6:3, 7:5}.toTable()
+var dict = open("word_list_fr.txt")
+var dictree : Patree
+
+
+proc calculate_scores() = 
+    for word, client in words.pairs():
+        let score =
+            if word.len < 3: 0
+            elif word.len >= 8: 11
+            else: score_table[word.len]
+        scores[client] += score
 
 proc transition(state: ServerState) : ServerState =
     case (state):
         of Idle:
             result = Research
         of Research:
-            result = Idle
+            result = Result
+            calculate_scores()
         of Verification:
             result = Result
         of Result:
@@ -31,6 +50,9 @@ proc name(id: int) : string =
 
 proc sock(id: int) : AsyncSocket =
     result = sockets[id]
+
+proc score(id: int) : int =
+    result = scores[id]
 
 proc make_client(sock: AsyncSocket) : int = 
     var id {.global.} = -1
@@ -44,11 +66,11 @@ proc table_find[A, B](t: var Table[A, B], value: B) : Option[A] =
             return some key
     return none(A)
 
-proc authentify(client: int, name:string) : bool =
-    if names.hasKey(client):
-        return false
-    names[client] = name
-    return true
+proc contains[A, B](t: Table[A, B], value: B) : bool =
+    for data in t.values():
+        if data == value:
+            return true
+    return false
 
 proc add_word(client: int, word:string) =
     words[word] = client
@@ -74,24 +96,47 @@ proc drop_client(client: int) {.async.} =
     sockets.del(client)
     if names.hasKey(client):
         await signal_others(client, "DECONNEXION/" & $names[client] & "\n")
+    if scores.hasKey(client):
+        scores.del(client)
     names.del(client)
 
 proc signal_all(msg: string) {.async.} =
     for id in names.keys():
         await id.sock.send(msg)
 
-proc session_timer() {.async.} =
-    await sleepAsync(10000)
-    await signal_all("RFIN/" & "\n")
-    state = state.transition()
+proc authentify(client: int, name:string) {.async.} =
+    names[client] = name
+    scores[client] = 0
+    echo "Player " & name & " connected."
+    await client.sock.send("You're connected as " & name & "\n")
+    await signal_others(client, "CONNECTE/" & name & "\n")
+
+proc send_scores() {.async.} =
+    for id in names.keys():
+        let score = id.score
+        await id.sock.send("BILANMOTS//" & $score & "\n")
 
 proc start_session() {.async.} =
     if state == Idle:
-        state = state.transition()
-    asyncCheck session_timer()
-    await signal_all("SESSION/" & "\n")
-    grid = get_grid()
-    await signal_all("TOUR/" & grid.join & "/10" & "\n")
+        state = Research
+        # Reset score on session start
+        for client in names.keys():
+            scores[client] = 0
+        await signal_all("SESSION/" & "\n")
+        for i in 0..<turns_per_session:
+            state = Research
+            grid = get_grid()
+            await signal_all("TOUR/" & grid.join & "/" & $turn_length & "\n")
+            await sleepAsync(turn_length * 1000)
+            await signal_all("RFIN/\n")
+            state = state.transition()
+            await send_scores()
+        var bilan = ""
+        scores.sort(proc(a, b: (int, int)) : int = (a[1] > b[1]).int)
+        for client, score in scores.pairs():
+            bilan &= client.name & "*" & $score & "|"
+        await signal_all("VAINQUEUR/" & bilan & "\n")
+        state = Idle
 
 # The tricky thing is that we have concurrent state machines.
 # One for every player, and one for the server as a whole.
@@ -115,22 +160,23 @@ proc process_chat(client: int, cmd: seq[string]) {.async, inline.} =
 proc process_idle(client: int, cmd: seq[string]) {.async, inline.} =
     case cmd[0]:
         of "START":
-            await start_session()
+            # We must launch session in parallel
+            asyncCheck start_session()
 
 proc process_research(client: int, cmd: seq[string]) {.async, inline.} =
     case cmd[0]:
         of "TROUVE":
             let word = cmd[1]
-            let correct = verify_trajectory(grid, word, cmd[2])
-            if correct:
-                if words.hasKey(word):
-                    duplicates.add(word)
-                    await client.sock.send("MINVALIDE/PRI" & "\n")
-                else:
-                    client.add_word(word)
-                    await client.sock.send("MVALIDE/" & word & "\n")
-            else:
+            if not verify_trajectory(grid, word, cmd[2]):
                 await client.sock.send("MINVALIDE/POS" & "\n")
+            elif dictree.lookup(word).is_none:
+                await client.sock.send("MINVALIDE/DIC" & "\n")
+            elif words.hasKey(word):
+                duplicates.add(word)
+                await client.sock.send("MINVALIDE/PRI" & "\n")
+            else:
+                client.add_word(word)
+                await client.sock.send("MVALIDE/" & word & "\n")
 
 proc process_state(client: int, cmd: seq[string]) {.async, inline.} =
     case state:
@@ -146,12 +192,13 @@ proc process_state(client: int, cmd: seq[string]) {.async, inline.} =
 proc process_always(client: int, cmd: seq[string]) {.async, inline.} =
     case cmd[0]:
         of "CONNEXION":
-            if client.authentify(cmd[1]):
-                echo "Player " & cmd[1] & " connected."
-                await client.sock.send("You're connected as " & cmd[1] & "\n")
-                await signal_others(client, "CONNECTE/" & cmd[1] & "\n")
+            if names.contains(cmd[1]):
+                await client.sock.send("ENVOI/Username already taken.\n")
+            elif names.hasKey(client):
+                await signal_others(client, "CONNECTE/" & cmd[1] & "/" & names[client] & "\n")
+                names[client] = cmd[1]
             else:
-                await client.sock.send("Username already taken.\n")
+                await client.authentify(cmd[1])
         of "quit":
             await drop_client(client)
         of "":
@@ -184,17 +231,25 @@ proc register() {.async.} =
     sockets = initTable[int, AsyncSocket]()
     names = initTable[int, string]()
     words = initTable[string, int]()
+    scores = initOrderedTable[int, int]()
     duplicates = @[]
     state = Idle
     grid = get_grid()
+    var tline : TaintedString
+    echo "Loading dictionnary..."
+    while (dict.read_line(tline)):
+        dictree.insert(tline)
+    echo "done."
 
     var server = new_async_socket()
     server.set_sock_opt(OptReuseAddr, true)
     server.bind_addr(Port(3434))
     server.listen()
+
     while true:
         let sock = await server.accept()
         asyncCheck handle(make_client(sock))
+        # asyncCheck session_manager()
 
 grid = get_grid()
 
