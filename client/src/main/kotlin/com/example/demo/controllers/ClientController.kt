@@ -7,10 +7,18 @@ import javafx.scene.control.Button
 import javafx.scene.control.ProgressIndicator
 import javafx.scene.control.TextArea
 import javafx.scene.control.TextField
+import javafx.scene.media.Media
+import javafx.scene.media.MediaPlayer
+import javafx.util.Duration
 import kotlinx.coroutines.experimental.async
 import tornadofx.*
 import tornadofx.Stylesheet.Companion.button
 import kotlin.concurrent.thread
+import javafx.animation.KeyFrame
+import javafx.animation.KeyValue
+import javafx.animation.Timeline
+
+
 
 class ClientController : Controller() {
     val client = Client()
@@ -25,6 +33,13 @@ class ClientController : Controller() {
 
     fun run(messages: TextArea, grid : MutableList<Button>, players: TextArea, turn_progress: ProgressIndicator) {
         async {
+            val think_track = MediaPlayer(Media("file:/home/kino/Projects/boggle/client/rsc/antiquity.wav"))
+            val stress_track = MediaPlayer(Media("file:/home/kino/Projects/boggle/client/rsc/seismic.wav"))
+            val timeline = Timeline(
+            KeyFrame(Duration.seconds(2.0),
+                    KeyValue(think_track.volumeProperty(), 0),
+                    KeyValue(stress_track.volumeProperty(), 100)))
+            stress_track.startTime = Duration(15000.0)
             while(isActive) {
                 while(true) {
                     var got = client.run()
@@ -44,7 +59,12 @@ class ClientController : Controller() {
                             client.send("GETPLAYERS")
                         }
                         "CONNECTE" -> {
-                            messages.text = messages.text + cmd[1] + " joined the game.\n"
+                            if (cmd.size > 2) {
+                                messages.text = messages.text + cmd[2] + " is now known as " + cmd[1] + "\n"
+                            }
+                            else {
+                                messages.text = messages.text + cmd[1] + " joined the game.\n"
+                            }
                             client.send("GETPLAYERS")
                         }
                         "PLAYERS" -> {
@@ -55,13 +75,27 @@ class ClientController : Controller() {
                             }
                         }
                         "TOUR" -> {
-                            println("you got TOUR")
+                            think_track.volume = 100.0
+                            stress_track.volume = 0.0
+                            stress_track.play()
                             // Check if we have the time extension
                             if (cmd.size == 3) {
                                 thread {
-                                    for (i in 0..(cmd[2]).toInt() * 100) {
-                                        Platform.runLater { turn_progress.progress = i.toDouble() / 100.0 }
-                                        Thread.sleep(100)
+                                    for (i in 0..100) {
+                                        Platform.runLater { turn_progress.progress = i.toDouble() / 100 }
+                                        Thread.sleep(cmd[2].toLong() * 10)
+                                    }
+                                }
+                                thread {
+                                    think_track.play()
+                                }
+                                thread {
+                                    Thread.sleep(cmd[2].toLong() * 1000 - 10000)
+
+                                    timeline.play()
+                                    timeline.setOnFinished {
+                                        //stress_track.play()
+                                        think_track.stop()
                                     }
                                 }
                             }
@@ -76,9 +110,21 @@ class ClientController : Controller() {
                             }
                         }
                         "RFIN" -> {
+                            stress_track.stop()
                             Platform.runLater {
                                 grid.forEach { it.text = "*"; it.isDisable = true}
                                 turn_progress.progress = 100.0
+                            }
+                        }
+                        "VAINQUEUR" -> {
+                            Platform.runLater {
+                                messages.text += "Game finished!\nScores:\n"
+                                cmd[1].split("|").forEach {
+                                    if (it != "") {
+                                        val tmp = it.split("*")
+                                        messages.text = messages.text + tmp[0] + ": " + tmp[1] + "\n"
+                                    }
+                                }
                             }
                         }
                     }
