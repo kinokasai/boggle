@@ -69,9 +69,11 @@ class ClientController : Controller() {
                         }
                         "PLAYERS" -> {
                             var players_list = cmd[1].split("|")
-                            players.text = ""
-                            for (player in players_list) {
-                                players.text += player + "\n"
+                            Platform.runLater {
+                                players.text = ""
+                                for (player in players_list) {
+                                    players.text += player + "\n"
+                                }
                             }
                         }
                         "TOUR" -> {
